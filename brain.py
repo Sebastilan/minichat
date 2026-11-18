@@ -1,10 +1,11 @@
 """一轮对话:拼提示、带历史、两步读卡、斜杠命令"""
 import json, os, re, time
-import models
+import models, search
 from memory import Memory
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HISTORY_TURNS = int(os.environ.get("HISTORY_TURNS", "10"))
+SEARCH_ON = os.environ.get("SEARCH", "1") != "0"  # SEARCH=0 关闭联网搜索
 HELP = "/模型 名字 切换模型 · /模型列表 · /记忆 看索引 · /睡 立刻整理记忆 · /帮助"
 
 
@@ -56,20 +57,27 @@ class Brain:
         self.log("user", text)
         msgs = [{"role": l["role"], "content": l["text"]} for l in self.chat_lines()[-(HISTORY_TURNS * 2 + 1):]]  # 本句 + 前 N 轮
         out = self.ask(msgs)
-        for _ in range(2):  # 其余卡最多两步可达:读一张,不够再读一张
+        for _ in range(3):  # 最多三步:读卡或搜索,拿到内容再答
             m = re.search(r"^\s*读记忆[::]\s*(\S+)\s*$", out, re.M)
-            if not m:
+            q = SEARCH_ON and re.search(r"^\s*搜索[::]\s*(.+?)\s*$", out, re.M)
+            if m:
+                card = self.memory.read(m.group(1)) or "(没有这张卡)"
+                feed = f"[记忆 {m.group(1)}]\n{card}\n(以上是你要读的卡,请接着回答我上一句。)"
+            elif q:
+                try:
+                    feed = f"[搜索 {q.group(1)}]\n{search.search(q.group(1))}\n(以上是搜索结果,请据此回答我上一句,别再搜。)"
+                except Exception:
+                    feed = "[搜索失败]\n(没搜到,请照常回答,并告诉用户这次没能联网查。)"
+            else:
                 break
-            card = self.memory.read(m.group(1)) or "(没有这张卡)"
-            msgs += [{"role": "assistant", "content": out},
-                     {"role": "user", "content": f"[记忆 {m.group(1)}]\n{card}\n(以上是你要读的卡,请接着回答我上一句。)"}]
+            msgs += [{"role": "assistant", "content": out}, {"role": "user", "content": feed}]
             out = self.ask(msgs)
         self.log("assistant", out)
         return out
 
     def command(self, text):
         cmd, _, arg = text.partition(" ")
-        names = [m["name"] for m in self.models]
+        names = [m["name"] for m in self.models if models._key(m)]  # 只列已配 key 的
         if cmd == "/模型" and arg.strip():
             if arg.strip() not in names:
                 return "没有这个模型。可选:" + "、".join(names)

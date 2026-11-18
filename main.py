@@ -84,6 +84,10 @@ def fake(m, system, msgs):
     if last.startswith("[记忆 偏好/饮食/咖啡]"):
         assert "美式" in last
         return "你每天早上喝一杯美式。"
+    if last.startswith("[搜索"):
+        return "查到了:" + ("没能联网查" if "搜索失败" in last else last.split("\n")[1])
+    if "天气" in last:
+        return "搜索: 今天天气"
     if "喝什么" in last:
         return "读记忆: 偏好/饮食/咖啡"
     if "计划" in last:
@@ -95,7 +99,8 @@ def selftest():
     def bad(m, s, msgs):
         raise ConnectionError("模拟断网")
     models.ADAPTERS.update(fake=fake, bad=bad)
-    ms = [{"name": "坏的", "protocol": "bad"}, {"name": "假", "protocol": "fake"}]
+    os.environ["T_KEY"] = "x"
+    ms = [{"name": "坏的", "protocol": "bad", "key_env": "T_KEY"}, {"name": "假", "protocol": "fake", "key_env": "T_KEY"}]
     b = brain.Brain(os.path.join(tempfile.mkdtemp(), "me"), ms)
     assert "输入" in b.reply("帮我做个周末出游计划"), "四要素追问 + 失败回退"
     b.reply("叫我小王就行,我每天早上喝一杯美式")
@@ -106,6 +111,10 @@ def selftest():
     assert "★3 偏好/饮食/咖啡 — 早上喝美式" in sysprompt
     assert "美式" in b.reply("我早上一般喝什么?"), "两步读卡"
     assert "已切换" in b.reply("/模型 假") and "→ 假" in b.reply("/模型列表")
+    brain.search.search = lambda q: "1. 晴 25度"  # 桩:不联网
+    assert "晴 25度" in b.reply("今天天气怎么样"), "搜索一步"
+    brain.search.search = lambda q: 1 / 0
+    assert "没能联网" in b.reply("今天天气怎么样"), "搜索失败兜底"
     b.reply("我已经不喝咖啡了")
     assert "退 1" in sleep.run(b) and b.memory.read("偏好/饮食/咖啡") is None
     assert glob.glob(os.path.join(b.memory.dir, "_退", "*咖啡.md")) and os.listdir(b.memory.archive_dir)
